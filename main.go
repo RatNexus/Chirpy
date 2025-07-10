@@ -14,14 +14,22 @@ func exitWithError(err error) {
 
 func main() {
 	serveMux := http.NewServeMux()
-	serveMux.Handle("/", http.FileServer(http.Dir("./static/")))
+	serveMux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.Dir("./static/"))))
+
+	healthHandler := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(200)
+		w.Write([]byte("OK"))
+	}
+
+	serveMux.HandleFunc("/healthz", healthHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: serveMux,
 	}
 
-	fmt.Println("Start server on http://localhost:8080/")
+	fmt.Println("Start server on http://localhost:8080/app")
 	err := server.ListenAndServe()
 	if err != nil {
 		exitWithError(err)
