@@ -52,9 +52,9 @@ func main() {
 		apiCfg.fileserverHits.Store(0)
 	}
 
-	serveMux.HandleFunc("GET /healthz", healthHandler)
-	serveMux.HandleFunc("GET /metrics", hitsHandler)
-	serveMux.HandleFunc("POST /reset", resetHandler)
+	serveMux.HandleFunc("GET /api/healthz", healthHandler)
+	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
+	serveMux.HandleFunc("POST /admin/reset", resetHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
