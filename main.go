@@ -1,17 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"os"
+	"strings"
 	"sync/atomic"
 )
-
-func exitWithError(err error) {
-	fmt.Println("Server exited with an error.")
-	fmt.Println(err)
-	os.Exit(1)
-}
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
@@ -24,11 +20,41 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+func readJSONRequest[T any](r *http.Request, jsonData *T) error {
+	decoder := json.NewDecoder(r.Body)
+	return decoder.Decode(jsonData)
+}
+
+func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
+	w.Header().Set("Content-Type", "application/json")
+	dat, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	w.WriteHeader(code)
+	w.Write(dat)
+	return nil
+}
+
+func respondWithError(w http.ResponseWriter, code int, msg string) error {
+	return respondWithJSON(w, code, struct {
+		Error string `json:"error"`
+	}{Error: msg})
+}
+
+func contains(slice []string, word string) bool {
+	for _, v := range slice {
+		if v == word {
+			return true
+		}
+	}
+	return false
+}
+
 func main() {
 	serveMux := http.NewServeMux()
 	apiCfg := &apiConfig{}
 	apiCfg.fileserverHits.Store(0)
-
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir("./static/")))
 
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(appHandler))
@@ -59,19 +85,55 @@ func main() {
 		apiCfg.fileserverHits.Store(0)
 	}
 
+	validateChirpHandler := func(w http.ResponseWriter, r *http.Request) {
+		type requestStruct struct {
+			Body string `json:"body"`
+		}
+		type cleanedStruct struct {
+			CleanedBody string `json:"cleaned_body"`
+		}
+		type validStruct struct {
+			Valid bool `json:"valid"`
+		}
+
+		requestData := requestStruct{}
+		err := readJSONRequest(r, &requestData)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		if len(requestData.Body) > 140 {
+			respondWithError(w, 400, "Chirp is too long")
+			return
+		}
+
+		body := strings.Split(requestData.Body, " ")
+		profanities := []string{"kerfuffle", "sharbert", "fornax"}
+		for i := range body {
+			if contains(profanities, strings.ToLower(body[i])) {
+				body[i] = "****"
+			}
+		}
+
+		joined := strings.Join(body, " ")
+		respondWithJSON(w, 200, &cleanedStruct{CleanedBody: joined})
+	}
+
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
 	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", resetHandler)
+	serveMux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
 		Handler: serveMux,
 	}
 
-	fmt.Println("Start server on http://localhost:8080/app")
+	log.Print("Start server on http://localhost:8080/app")
 	err := server.ListenAndServe()
 	if err != nil {
-		exitWithError(err)
+		log.Fatal(err)
 	}
-	fmt.Println("Server exited with no errors.")
+	log.Print("Server exited with no errors.")
 }
