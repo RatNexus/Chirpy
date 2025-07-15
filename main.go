@@ -22,6 +22,30 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 }
 
+type requestStruct struct {
+	Body string `json:"body"`
+}
+
+type User struct {
+	ID         uuid.UUID `json:"id"`
+	Created_at time.Time `json:"created_at"`
+	Updated_at time.Time `json:"updated_at"`
+	Email      string    `json:"email"`
+}
+
+type Chirp struct {
+	ID         uuid.UUID `json:"id"`
+	Created_at time.Time `json:"created_at"`
+	Updated_at time.Time `json:"updated_at"`
+	Body       string    `json:"body"`
+	User_id    uuid.UUID `json:"user_id"`
+}
+
+type createChirpReq struct {
+	Body    string `json:"body"`
+	User_id string `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -61,6 +85,25 @@ func contains(slice []string, word string) bool {
 	return false
 }
 
+func ironChirp(dbChirp database.Chirp) Chirp {
+	return Chirp{
+		ID:         dbChirp.ID,
+		Created_at: dbChirp.CreatedAt.Time,
+		Updated_at: dbChirp.CreatedAt.Time,
+		Body:       dbChirp.Body,
+		User_id:    dbChirp.UserID,
+	}
+}
+
+func ironChirps(dbChirps []database.Chirp) []Chirp {
+	smoothChirps := make([]Chirp, len(dbChirps))
+	for i := range dbChirps {
+		smoothChirps[i] = ironChirp(dbChirps[i])
+	}
+
+	return smoothChirps
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -72,30 +115,6 @@ func main() {
 		log.Fatal("Could not open postres db")
 	}
 	defer db.Close()
-
-	type requestStruct struct {
-		Body string `json:"body"`
-	}
-
-	type User struct {
-		ID         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Email      string    `json:"email"`
-	}
-
-	type Chirp struct {
-		ID         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Body       string    `json:"body"`
-		User_id    uuid.UUID `json:"user_id"`
-	}
-
-	type createChirpReq struct {
-		Body    string `json:"body"`
-		User_id string `json:"user_id"`
-	}
 
 	serveMux := http.NewServeMux()
 	apiCfg := &apiConfig{}
@@ -172,14 +191,7 @@ func main() {
 			respondWithError(w, 400, "Something went wrong")
 			return
 		}
-		outChirp := Chirp{
-			ID:         chirp.ID,
-			Created_at: chirp.CreatedAt.Time,
-			Updated_at: chirp.CreatedAt.Time,
-			Body:       chirp.Body,
-			User_id:    chirp.UserID,
-		}
-
+		outChirp := ironChirp(chirp)
 		respondWithJSON(w, 201, &outChirp)
 	}
 
@@ -206,9 +218,22 @@ func main() {
 		respondWithJSON(w, 201, &userSt)
 	}
 
+	getChirpsHandler := func(w http.ResponseWriter, r *http.Request) {
+		chirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		smoothChirps := ironChirps(chirps)
+		respondWithJSON(w, 200, smoothChirps)
+
+	}
+
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
 	serveMux.HandleFunc("POST /api/users", addUserHandler)
 	serveMux.HandleFunc("POST /api/chirps", createChirpHandler)
+	serveMux.HandleFunc("GET /api/chirps", getChirpsHandler)
 
 	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", resetHandler)
