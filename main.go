@@ -1,16 +1,25 @@
 package main
 
 import (
+	"chirpy/internal/database"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	dbQueries      *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -52,9 +61,32 @@ func contains(slice []string, word string) bool {
 }
 
 func main() {
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
+	db, err := sql.Open("postgres", dbURL)
+	dbQueries := database.New(db)
+
+	if err != nil {
+		log.Fatal("Could not open postres db")
+	}
+	defer db.Close()
+
+	type requestStruct struct {
+		Body string `json:"body"`
+	}
+
+	type User struct {
+		ID         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}
+
 	serveMux := http.NewServeMux()
 	apiCfg := &apiConfig{}
 	apiCfg.fileserverHits.Store(0)
+	apiCfg.dbQueries = dbQueries
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir("./static/")))
 
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(appHandler))
@@ -79,16 +111,18 @@ func main() {
 	}
 
 	resetHandler := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(200)
-		w.Write([]byte(fmt.Sprintf("Hits reset from: %v", apiCfg.fileserverHits.Load())))
+		if platform != "dev" {
+			respondWithError(w, 403, "Forbidden")
+			return
+		}
 		apiCfg.fileserverHits.Store(0)
+		apiCfg.dbQueries.DeleteAllUsers(r.Context())
+
+		msg := fmt.Sprintf("Users Deleted. Hits reset from: %v", apiCfg.fileserverHits.Load())
+		respondWithJSON(w, 200, requestStruct{Body: msg})
 	}
 
 	validateChirpHandler := func(w http.ResponseWriter, r *http.Request) {
-		type requestStruct struct {
-			Body string `json:"body"`
-		}
 		type cleanedStruct struct {
 			CleanedBody string `json:"cleaned_body"`
 		}
@@ -120,10 +154,35 @@ func main() {
 		respondWithJSON(w, 200, &cleanedStruct{CleanedBody: joined})
 	}
 
+	addUserHandler := func(w http.ResponseWriter, r *http.Request) {
+		type emailStruct struct {
+			Email string `json:"email"`
+		}
+
+		gotMail := &emailStruct{}
+		readJSONRequest(r, gotMail)
+
+		user, err := apiCfg.dbQueries.CreateUser(r.Context(), gotMail.Email)
+		if err != nil {
+			prt := fmt.Sprintf("Failed to create user. Err: %e", err)
+			log.Print(prt)
+			respondWithError(w, 400, prt)
+		}
+		userSt := User{
+			ID:         user.ID,
+			Email:      user.Email,
+			Created_at: user.CreatedAt,
+			Updated_at: user.UpdatedAt,
+		}
+		respondWithJSON(w, 201, &userSt)
+	}
+
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
+	serveMux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
+	serveMux.HandleFunc("POST /api/users", addUserHandler)
+
 	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", resetHandler)
-	serveMux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 
 	server := &http.Server{
 		Addr:    ":8080",
@@ -131,7 +190,7 @@ func main() {
 	}
 
 	log.Print("Start server on http://localhost:8080/app")
-	err := server.ListenAndServe()
+	err = server.ListenAndServe()
 	if err != nil {
 		log.Fatal(err)
 	}
