@@ -46,6 +46,7 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error
 }
 
 func respondWithError(w http.ResponseWriter, code int, msg string) error {
+	log.Print(msg)
 	return respondWithJSON(w, code, struct {
 		Error string `json:"error"`
 	}{Error: msg})
@@ -81,6 +82,19 @@ func main() {
 		Created_at time.Time `json:"created_at"`
 		Updated_at time.Time `json:"updated_at"`
 		Email      string    `json:"email"`
+	}
+
+	type Chirp struct {
+		ID         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Body       string    `json:"body"`
+		User_id    uuid.UUID `json:"user_id"`
+	}
+
+	type createChirpReq struct {
+		Body    string `json:"body"`
+		User_id string `json:"user_id"`
 	}
 
 	serveMux := http.NewServeMux()
@@ -122,36 +136,51 @@ func main() {
 		respondWithJSON(w, 200, requestStruct{Body: msg})
 	}
 
-	validateChirpHandler := func(w http.ResponseWriter, r *http.Request) {
-		type cleanedStruct struct {
-			CleanedBody string `json:"cleaned_body"`
-		}
-		type validStruct struct {
-			Valid bool `json:"valid"`
-		}
-
-		requestData := requestStruct{}
-		err := readJSONRequest(r, &requestData)
+	createChirpHandler := func(w http.ResponseWriter, r *http.Request) {
+		createChirpReqData := createChirpReq{}
+		err := readJSONRequest(r, &createChirpReqData)
 		if err != nil {
 			respondWithError(w, 400, "Something went wrong")
 			return
 		}
 
-		if len(requestData.Body) > 140 {
+		if len(createChirpReqData.Body) > 140 {
 			respondWithError(w, 400, "Chirp is too long")
 			return
 		}
 
-		body := strings.Split(requestData.Body, " ")
+		body := strings.Split(createChirpReqData.Body, " ")
 		profanities := []string{"kerfuffle", "sharbert", "fornax"}
 		for i := range body {
 			if contains(profanities, strings.ToLower(body[i])) {
 				body[i] = "****"
 			}
 		}
-
 		joined := strings.Join(body, " ")
-		respondWithJSON(w, 200, &cleanedStruct{CleanedBody: joined})
+
+		user_uuid, err := uuid.Parse(createChirpReqData.User_id)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
+			Body:   joined,
+			UserID: user_uuid,
+		})
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+		outChirp := Chirp{
+			ID:         chirp.ID,
+			Created_at: chirp.CreatedAt.Time,
+			Updated_at: chirp.CreatedAt.Time,
+			Body:       chirp.Body,
+			User_id:    chirp.UserID,
+		}
+
+		respondWithJSON(w, 201, &outChirp)
 	}
 
 	addUserHandler := func(w http.ResponseWriter, r *http.Request) {
@@ -178,8 +207,8 @@ func main() {
 	}
 
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
-	serveMux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 	serveMux.HandleFunc("POST /api/users", addUserHandler)
+	serveMux.HandleFunc("POST /api/chirps", createChirpHandler)
 
 	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", resetHandler)
