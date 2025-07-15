@@ -227,13 +227,30 @@ func main() {
 
 		smoothChirps := ironChirps(chirps)
 		respondWithJSON(w, 200, smoothChirps)
+	}
 
+	getChirpHandler := func(w http.ResponseWriter, r *http.Request) {
+		chirp_id := r.PathValue("chirpID")
+		chirp_uuid, err := uuid.Parse(chirp_id)
+		if chirp_id == "" || err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirp_uuid)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		respondWithJSON(w, 200, ironChirp(chirp))
 	}
 
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
 	serveMux.HandleFunc("POST /api/users", addUserHandler)
 	serveMux.HandleFunc("POST /api/chirps", createChirpHandler)
 	serveMux.HandleFunc("GET /api/chirps", getChirpsHandler)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", getChirpHandler)
 
 	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", resetHandler)
