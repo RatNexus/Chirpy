@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"database/sql"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	secret         string
 }
 
 type requestStruct struct {
@@ -33,17 +35,27 @@ type User struct {
 	Email      string    `json:"email"`
 }
 
+type UserWithToken struct {
+	User
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type JustToken struct {
+	Token string `json:"token"`
+}
+
+type userEnter struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 type Chirp struct {
 	ID         uuid.UUID `json:"id"`
 	Created_at time.Time `json:"created_at"`
 	Updated_at time.Time `json:"updated_at"`
 	Body       string    `json:"body"`
 	User_id    uuid.UUID `json:"user_id"`
-}
-
-type createChirpReq struct {
-	Body    string `json:"body"`
-	User_id string `json:"user_id"`
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -120,6 +132,8 @@ func main() {
 	apiCfg := &apiConfig{}
 	apiCfg.fileserverHits.Store(0)
 	apiCfg.dbQueries = dbQueries
+	apiCfg.secret = os.Getenv("SECRET")
+
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir("./static/")))
 
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(appHandler))
@@ -156,10 +170,22 @@ func main() {
 	}
 
 	createChirpHandler := func(w http.ResponseWriter, r *http.Request) {
-		createChirpReqData := createChirpReq{}
+		createChirpReqData := requestStruct{}
 		err := readJSONRequest(r, &createChirpReqData)
 		if err != nil {
 			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		token_str, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
+			return
+		}
+
+		user_uuid, err := auth.ValidateJWT(token_str, apiCfg.secret)
+		if err != nil {
+			respondWithError(w, 401, "Unauthorized")
 			return
 		}
 
@@ -177,12 +203,6 @@ func main() {
 		}
 		joined := strings.Join(body, " ")
 
-		user_uuid, err := uuid.Parse(createChirpReqData.User_id)
-		if err != nil {
-			respondWithError(w, 400, "Something went wrong")
-			return
-		}
-
 		chirp, err := apiCfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
 			Body:   joined,
 			UserID: user_uuid,
@@ -196,18 +216,22 @@ func main() {
 	}
 
 	addUserHandler := func(w http.ResponseWriter, r *http.Request) {
-		type emailStruct struct {
-			Email string `json:"email"`
+		userRegister := &userEnter{}
+		readJSONRequest(r, userRegister)
+		hashed_password, err := auth.HashPassword(userRegister.Password)
+		if err != nil {
+			respondWithError(w, 400, fmt.Sprintf("Failed to create user. Err: %e", err))
+			return
 		}
 
-		gotMail := &emailStruct{}
-		readJSONRequest(r, gotMail)
+		user, err := apiCfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+			Email:          userRegister.Email,
+			HashedPassword: hashed_password,
+		})
 
-		user, err := apiCfg.dbQueries.CreateUser(r.Context(), gotMail.Email)
 		if err != nil {
-			prt := fmt.Sprintf("Failed to create user. Err: %e", err)
-			log.Print(prt)
-			respondWithError(w, 400, prt)
+			respondWithError(w, 400, fmt.Sprintf("Failed to create user. Err: %e", err))
+			return
 		}
 		userSt := User{
 			ID:         user.ID,
@@ -246,8 +270,96 @@ func main() {
 		respondWithJSON(w, 200, ironChirp(chirp))
 	}
 
+	loginUserHandler := func(w http.ResponseWriter, r *http.Request) {
+		userLogIn := &userEnter{}
+		readJSONRequest(r, userLogIn)
+
+		user, err := apiCfg.dbQueries.GetUserByEmail(r.Context(), userLogIn.Email)
+		if err != nil ||
+			auth.CheckPasswordHash(userLogIn.Password, user.HashedPassword) != nil {
+			respondWithError(w, 401, "Incorrect email or password")
+			return
+		}
+
+		expiresIn := time.Duration(3600) * time.Second
+		token, err := auth.MakeJWT(user.ID, apiCfg.secret, expiresIn)
+
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		refresh_token, err := auth.MakeRefreshToken()
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+		_, err = apiCfg.dbQueries.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+			UserID: user.ID,
+			Token:  refresh_token,
+		})
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		userSt := UserWithToken{
+			User: User{
+				ID:         user.ID,
+				Email:      user.Email,
+				Created_at: user.CreatedAt,
+				Updated_at: user.UpdatedAt,
+			},
+			Token:        token,
+			RefreshToken: refresh_token,
+		}
+		respondWithJSON(w, 200, &userSt)
+	}
+
+	refreshTokenHandle := func(w http.ResponseWriter, r *http.Request) {
+		tokenStr, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Something went wrong 1")
+			return
+		}
+
+		user_uuid, err := apiCfg.dbQueries.GetRefreshToken(r.Context(), tokenStr)
+		if err != nil {
+			log.Print(err)
+			respondWithError(w, 401, "Something went wrong 2")
+			return
+		}
+		expiresIn := time.Duration(3600) * time.Second
+		access_token, err := auth.MakeJWT(user_uuid, apiCfg.secret, expiresIn)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong 3")
+			return
+		}
+
+		respondWithJSON(w, 200, JustToken{Token: access_token})
+	}
+
+	revokeTokenHandle := func(w http.ResponseWriter, r *http.Request) {
+		tokenStr, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Something went wrong")
+			return
+		}
+
+		_, err = apiCfg.dbQueries.RevokeToken(r.Context(), tokenStr)
+		if err != nil {
+			respondWithError(w, 401, "Something went wrong")
+			return
+		}
+
+		respondWithJSON(w, 204, nil)
+	}
+
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
 	serveMux.HandleFunc("POST /api/users", addUserHandler)
+	serveMux.HandleFunc("POST /api/login", loginUserHandler)
+	serveMux.HandleFunc("POST /api/refresh", refreshTokenHandle)
+	serveMux.HandleFunc("POST /api/revoke", revokeTokenHandle)
 	serveMux.HandleFunc("POST /api/chirps", createChirpHandler)
 	serveMux.HandleFunc("GET /api/chirps", getChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", getChirpHandler)
