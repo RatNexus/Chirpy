@@ -355,8 +355,51 @@ func main() {
 		respondWithJSON(w, 204, nil)
 	}
 
+	updateUserHandler := func(w http.ResponseWriter, r *http.Request) {
+		userDat := &userEnter{}
+		readJSONRequest(r, userDat)
+
+		tokenStr, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Something went wrong")
+			return
+		}
+
+		user_uuid, err := auth.ValidateJWT(tokenStr, apiCfg.secret)
+		if err != nil {
+			respondWithError(w, 401, "Something went wrong")
+			return
+		}
+
+		hashed_password, err := auth.HashPassword(userDat.Password)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		user, err := apiCfg.dbQueries.UpdateUser(r.Context(), database.UpdateUserParams{
+			ID:             user_uuid,
+			Email:          userDat.Email,
+			HashedPassword: hashed_password,
+		})
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		userStruct := User{
+			ID:         user_uuid,
+			Created_at: user.CreatedAt,
+			Updated_at: user.UpdatedAt,
+			Email:      user.Email,
+		}
+
+		respondWithJSON(w, 200, userStruct)
+	}
+
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
 	serveMux.HandleFunc("POST /api/users", addUserHandler)
+	serveMux.HandleFunc("PUT /api/users", updateUserHandler)
 	serveMux.HandleFunc("POST /api/login", loginUserHandler)
 	serveMux.HandleFunc("POST /api/refresh", refreshTokenHandle)
 	serveMux.HandleFunc("POST /api/revoke", revokeTokenHandle)
