@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -241,14 +242,55 @@ func (apiCfg *apiConfig) addUserHandler(w http.ResponseWriter, r *http.Request) 
 	respondWithJSON(w, 201, &userSt)
 }
 
+// a lot of usless repetition here, TODO: fix
 func (apiCfg *apiConfig) getChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	o := r.URL.Query().Get("sort")
+	s := r.URL.Query().Get("author_id")
+	if s != "" {
+		user_id, err := uuid.Parse(s)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		chirps, err := apiCfg.dbQueries.GetUsersChirps(r.Context(), user_id)
+		if err != nil {
+			respondWithError(w, 400, "Something went wrong")
+			return
+		}
+
+		smoothChirps := ironChirps(chirps)
+		if o == "asc" {
+			sort.Slice(smoothChirps, func(i, j int) bool {
+				return smoothChirps[i].Created_at.Before(smoothChirps[j].Created_at)
+			})
+		}
+		if o == "desc" {
+			sort.Slice(smoothChirps, func(i, j int) bool {
+				return smoothChirps[i].Created_at.After(smoothChirps[j].Created_at)
+			})
+		}
+
+		respondWithJSON(w, 200, smoothChirps)
+		return
+	}
+
 	chirps, err := apiCfg.dbQueries.GetAllChirps(r.Context())
 	if err != nil {
 		respondWithError(w, 400, "Something went wrong")
 		return
 	}
-
 	smoothChirps := ironChirps(chirps)
+	if o == "asc" {
+		sort.Slice(smoothChirps, func(i, j int) bool {
+			return smoothChirps[i].Created_at.Before(smoothChirps[j].Created_at)
+		})
+	}
+	if o == "desc" {
+		sort.Slice(smoothChirps, func(i, j int) bool {
+			return smoothChirps[i].Created_at.After(smoothChirps[j].Created_at)
+		})
+	}
 	respondWithJSON(w, 200, smoothChirps)
 }
 
