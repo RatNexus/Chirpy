@@ -11,6 +11,23 @@ import (
 	"github.com/google/uuid"
 )
 
+const canBeDeleted = `-- name: CanBeDeleted :one
+SELECT 1 FROM chirps
+WHERE id = $1 AND user_id = $2
+`
+
+type CanBeDeletedParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) CanBeDeleted(ctx context.Context, arg CanBeDeletedParams) (int32, error) {
+	row := q.db.QueryRowContext(ctx, canBeDeleted, arg.ID, arg.UserID)
+	var column_1 int32
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const createChirp = `-- name: CreateChirp :one
 INSERT INTO chirps (id, created_at, updated_at, body, user_id)
 VALUES (
@@ -35,6 +52,21 @@ func (q *Queries) CreateChirp(ctx context.Context, arg CreateChirpParams) (Chirp
 		&i.UserID,
 	)
 	return i, err
+}
+
+const deleteChirp = `-- name: DeleteChirp :exec
+DELETE FROM chirps
+WHERE id = $1 AND user_id = $2
+`
+
+type DeleteChirpParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeleteChirp(ctx context.Context, arg DeleteChirpParams) error {
+	_, err := q.db.ExecContext(ctx, deleteChirp, arg.ID, arg.UserID)
+	return err
 }
 
 const getAllChirps = `-- name: GetAllChirps :many

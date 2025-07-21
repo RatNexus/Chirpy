@@ -257,13 +257,13 @@ func main() {
 		chirp_id := r.PathValue("chirpID")
 		chirp_uuid, err := uuid.Parse(chirp_id)
 		if chirp_id == "" || err != nil {
-			respondWithError(w, 400, "Something went wrong")
+			respondWithError(w, 404, "Something went wrong")
 			return
 		}
 
 		chirp, err := apiCfg.dbQueries.GetChirp(r.Context(), chirp_uuid)
 		if err != nil {
-			respondWithError(w, 400, "Something went wrong")
+			respondWithError(w, 404, "Something went wrong")
 			return
 		}
 
@@ -397,6 +397,47 @@ func main() {
 		respondWithJSON(w, 200, userStruct)
 	}
 
+	deleteChirpHandler := func(w http.ResponseWriter, r *http.Request) {
+		tokenStr, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			respondWithError(w, 401, "Something went wrong")
+			return
+		}
+
+		user_uuid, err := auth.ValidateJWT(tokenStr, apiCfg.secret)
+		if err != nil {
+			respondWithError(w, 403, "Something went wrong")
+			return
+		}
+
+		chirp_id := r.PathValue("chirpID")
+		chirp_uuid, err := uuid.Parse(chirp_id)
+		if chirp_id == "" || err != nil {
+			respondWithError(w, 404, "Something went wrong")
+			return
+		}
+
+		one, err := apiCfg.dbQueries.CanBeDeleted(r.Context(), database.CanBeDeletedParams{
+			ID:     chirp_uuid,
+			UserID: user_uuid,
+		})
+		if err != nil || one != 1 {
+			respondWithError(w, 403, "Something went wrong")
+			return
+		}
+
+		err = apiCfg.dbQueries.DeleteChirp(r.Context(), database.DeleteChirpParams{
+			ID:     chirp_uuid,
+			UserID: user_uuid,
+		})
+		if err != nil {
+			respondWithError(w, 404, "Something went wrong")
+			return
+		}
+
+		respondWithJSON(w, 204, nil)
+	}
+
 	serveMux.HandleFunc("GET /api/healthz", healthHandler)
 	serveMux.HandleFunc("POST /api/users", addUserHandler)
 	serveMux.HandleFunc("PUT /api/users", updateUserHandler)
@@ -406,6 +447,7 @@ func main() {
 	serveMux.HandleFunc("POST /api/chirps", createChirpHandler)
 	serveMux.HandleFunc("GET /api/chirps", getChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", getChirpHandler)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", deleteChirpHandler)
 
 	serveMux.HandleFunc("GET /admin/metrics", hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", resetHandler)

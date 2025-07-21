@@ -8,6 +8,10 @@ RETURNING *;
 -- name: DeleteAllUsers :exec
 DELETE FROM users;
 
+-- name: DeleteUser :exec
+DELETE FROM users
+WHERE id = $1;
+
 -- name: GetUserByEmail :one
 SELECT * from users
 WHERE email = $1;
