@@ -25,6 +25,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	secret         string
 	platform       string
+	apiKey         string
 }
 
 type requestStruct struct {
@@ -36,6 +37,17 @@ type User struct {
 	Created_at time.Time `json:"created_at"`
 	Updated_at time.Time `json:"updated_at"`
 	Email      string    `json:"email"`
+	IsRed      bool      `json:"is_chirpy_red"`
+}
+
+func DbUserToUserStruct(du database.User) User {
+	return User{
+		ID:         du.ID,
+		Created_at: du.CreatedAt,
+		Updated_at: du.UpdatedAt,
+		Email:      du.Email,
+		IsRed:      du.IsChirpyRed.Valid && du.IsChirpyRed.Bool,
+	}
 }
 
 type UserWithToken struct {
@@ -296,6 +308,7 @@ func (apiCfg *apiConfig) loginUserHandler(w http.ResponseWriter, r *http.Request
 			Email:      user.Email,
 			Created_at: user.CreatedAt,
 			Updated_at: user.UpdatedAt,
+			IsRed:      user.IsChirpyRed.Bool && user.IsChirpyRed.Valid,
 		},
 		Token:        token,
 		RefreshToken: refresh_token,
@@ -379,6 +392,7 @@ func (apiCfg *apiConfig) updateUserHandler(w http.ResponseWriter, r *http.Reques
 		Created_at: user.CreatedAt,
 		Updated_at: user.UpdatedAt,
 		Email:      user.Email,
+		IsRed:      user.IsChirpyRed.Bool && user.IsChirpyRed.Valid,
 	}
 
 	respondWithJSON(w, 200, userStruct)
@@ -425,6 +439,50 @@ func (apiCfg *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Reque
 	respondWithJSON(w, 204, nil)
 }
 
+func (apiCfg *apiConfig) upgradeUserHandler(w http.ResponseWriter, r *http.Request) {
+	type EventStruct struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserId string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	eventStruct := EventStruct{}
+	readJSONRequest(r, &eventStruct)
+
+	if eventStruct.Event != "user.upgraded" {
+		respondWithJSON(w, 204, nil)
+		return
+	}
+
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil || apiKey != apiCfg.apiKey {
+		respondWithJSON(w, 401, nil)
+		return
+	}
+
+	user_id, err := uuid.Parse(eventStruct.Data.UserId)
+	if err != nil {
+		respondWithJSON(w, 404, nil)
+		return
+	}
+
+	_, err = apiCfg.dbQueries.GetUserById(r.Context(), user_id)
+	if err != nil {
+		respondWithJSON(w, 404, nil)
+		return
+	}
+
+	_, err = apiCfg.dbQueries.UpgradeUser(r.Context(), user_id)
+	if err != nil {
+		respondWithJSON(w, 404, nil)
+		return
+	}
+
+	respondWithJSON(w, 204, nil)
+
+}
+
 // ------------------------------
 
 func main() {
@@ -449,9 +507,14 @@ func main() {
 	if apiCfg.platform == "" {
 		log.Fatal("PLATFORM must be set")
 	}
-	apiCfg.secret = os.Getenv("JWT_SECRET")
+	apiCfg.secret = os.Getenv("SECRET")
 	if apiCfg.secret == "" {
-		log.Fatal("JWT_SECRET environment variable is not set")
+		log.Fatal("SECRET environment variable is not set")
+	}
+
+	apiCfg.apiKey = os.Getenv("POLKA_KEY")
+	if apiCfg.apiKey == "" {
+		log.Fatal("POLKA_KEY environment variable is not set")
 	}
 
 	appHandler := http.StripPrefix("/app/", http.FileServer(http.Dir("./static/")))
@@ -469,6 +532,8 @@ func main() {
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
+
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.upgradeUserHandler)
 
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)

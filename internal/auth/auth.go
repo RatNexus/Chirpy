@@ -69,9 +69,7 @@ func GetBearerToken(headers http.Header) (string, error) {
 		fmt.Print(authority)
 		return "", fmt.Errorf("authorization token has no Bearer prefix")
 	}
-	//fmt.Print(authority)
 	token_str := authority[7:]
-	//fmt.Print(token_str)
 	return token_str, nil
 }
 
@@ -84,4 +82,18 @@ func MakeRefreshToken() (string, error) {
 	dat := hex.EncodeToString(key)
 
 	return dat, nil
+}
+
+func GetAPIKey(headers http.Header) (string, error) {
+	authority := headers.Get("Authorization")
+	if authority == "" {
+		return "", fmt.Errorf("no authorization token in given header")
+	}
+
+	if !strings.HasPrefix(authority, "ApiKey ") {
+		fmt.Print(authority)
+		return "", fmt.Errorf("authorization token has no ApiKey prefix")
+	}
+	token_str := authority[7:]
+	return token_str, nil
 }
